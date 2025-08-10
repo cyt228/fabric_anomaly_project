@@ -1,0 +1,5 @@
+loss=0.380282
+acc=0.896739
+precision=0.200000
+recall=0.062500
+tp=1, fp=4, tn=164, fn=15

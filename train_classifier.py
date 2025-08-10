@@ -109,9 +109,9 @@ def make_dataloaders(orig_dir, recon_dir, normals_csv, batch_size=16, val_ratio=
     }
     return dls
 
-def train_val_loop(orig_dir="data/SP3/train/defect_for_classify",
+def train_val_loop(orig_dir="dataset/SP3/train/defect_for_classify",
                    recon_dir="out/recon",
-                   normals_csv="data/SP3/train/defect_for_classify/no_defects.csv",
+                   normals_csv="dataset/SP3/train/defect_for_classify/no_defects.csv",
                    out_ckpt="checkpoints_cls/cls_from_singledir_best.pt",
                    size=512, epochs=40, batch_size=16, lr=1e-4, step_size=20, gamma=0.1):
     os.makedirs(os.path.dirname(out_ckpt), exist_ok=True)
@@ -125,13 +125,15 @@ def train_val_loop(orig_dir="data/SP3/train/defect_for_classify",
     best=float("inf"); best_w=None
     for ep in range(epochs):
         print(f"Epoch {ep}/{epochs-1}\n" + "-"*10)
-        t0=time.time()
-        for phase in ["train","val"]:
+        t0 = time.time()
+
+        for phase in ["train", "val"]:
             net.train() if phase=="train" else net.eval()
-            metrics = defaultdict(float); metrics["_loss_fn"]=loss_fn
-            for x,y in dls[phase]:
-                x,y = x.to(DEVICE), y.to(DEVICE)
-                if phase=="train":
+            metrics = defaultdict(float); metrics["_loss_fn"] = loss_fn
+
+            for x, y in dls[phase]:
+                x, y = x.to(DEVICE), y.to(DEVICE)
+                if phase == "train":
                     opt.zero_grad(set_to_none=True)
                     logits = net(x)
                     loss = calc_metrics(logits, y, metrics)
@@ -141,25 +143,38 @@ def train_val_loop(orig_dir="data/SP3/train/defect_for_classify",
                         logits = net(x)
                         _ = calc_metrics(logits, y, metrics)
 
-            if phase=="train":
+            if phase == "train":
                 sch.step()
-                for pg in opt.param_groups: print("LR", pg["lr"])
+                for pg in opt.param_groups:
+                    print("LR", pg["lr"])
 
             val_loss = summarize(metrics, phase)
-            if phase=="val" and val_loss < best - 1e-4:
-                best = val_loss; best_w = net.state_dict().copy()
+
+            # —— 每個 epoch 都先存一份 latest（保底）
+            last_path = out_ckpt.replace(".pt", "_last.pt")
+            dirpath = os.path.dirname(last_path)
+            if dirpath: os.makedirs(dirpath, exist_ok=True)
+            torch.save({"model": net.state_dict()}, last_path)
+
+            # —— 只有進步才覆蓋 best
+            if phase == "val" and np.isfinite(val_loss) and (val_loss < best - 1e-4):
+                best = val_loss
+                best_w = net.state_dict().copy()
+                best_dir = os.path.dirname(out_ckpt)
+                if best_dir: os.makedirs(best_dir, exist_ok=True)
                 torch.save({"model": best_w}, out_ckpt)
-                print(f"  ↳ saved best to {out_ckpt}")
-        dt=time.time()-t0
+                print(f"  ↳ saved BEST to {os.path.abspath(out_ckpt)}")
+
+        dt = time.time() - t0
         print(f"{int(dt//60)}m {int(dt%60)}s\n")
     print("Best val loss:", best)
 
 if __name__ == "__main__":
     # 依實際路徑調整
     train_val_loop(
-        orig_dir="data/SP3/train/defect_for_classify",
-            recon_dir="out/recon",
-            normals_csv="data/SP3/train/defect_for_classify/no_defects.csv", # 「原本無瑕疵」清單
+        orig_dir="dataset/SP3/train/defect_for_classify",
+        recon_dir="out/recon",
+        normals_csv="dataset/SP3/train/defect_for_classify/no_defects.csv", # 「原本無瑕疵」清單
         out_ckpt="checkpoints_cls/cls_from_singledir_best.pt",
         size=512, epochs=40, batch_size=16, lr=1e-4
     )

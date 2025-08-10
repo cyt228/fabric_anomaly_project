@@ -54,7 +54,7 @@ def print_metrics(metrics, n, phase):
     print(f"{phase}: loss={avg_loss:.4f} | L1={avg_l1:.4f} | SSIM={avg_ssim:.4f}")
 
 # dataloaders
-def make_dataloaders(normal_dir="dataset/SP3/train/defect-free", anom_dir="dataset/SP3/train/defect", batch_size=4, num_workers=4):
+def make_dataloaders(normal_dir="dataset/SP3/train/defect-free", anom_dir="dataset/SP3/train/defect", batch_size=16, num_workers=4):
     ds = ReconPairedDataset(normal_dir, anom_dir)  # x_anom, x_norm, stem
     n_val = max(1, int(0.1*len(ds))); n_tr = len(ds) - n_val
     tr_ds, val_ds = random_split(ds, [n_tr, n_val], generator=torch.Generator().manual_seed(42))
@@ -127,7 +127,7 @@ if __name__ == "__main__":
     exp_lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer_ft, step_size=30, gamma=0.1)
 
     # 3) Data
-    dataloaders = make_dataloaders(batch_size=4)
+    dataloaders = make_dataloaders(batch_size=16)
 
     # 4) Train
     model = train_model(model, dataloaders, optimizer_ft, exp_lr_scheduler, num_epochs=60)

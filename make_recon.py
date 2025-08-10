@@ -13,7 +13,7 @@ def to_bgr_u8(t):
     return cv2.cvtColor(x, cv2.COLOR_RGB2BGR)
 
 @torch.no_grad()
-def main(normal_dir="dataset/SP3/train/defect-free", anom_dir="dataset/SP3/train/defect_for_classify",
+def main(normal_dir="dataset/SP3/train/defect-free", anom_dir="dataset/SP3/train/defect",
          ckpt="checkpoints/recon_unet_best.pt", out_root="out/recon",
          batch_size=8, num_workers=4):
     os.makedirs(out_root, exist_ok=True)

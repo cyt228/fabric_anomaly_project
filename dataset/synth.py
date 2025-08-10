@@ -4,7 +4,7 @@ import os
 
 def random_region(img,
                   shape_types = ("circle","vert_strip","hori_strip"), # rect
-                  area_ratio_range = (0.01, 0.05), # 區域面積佔整張圖比例(最小, 最大)
+                  area_ratio_range = (0.005, 0.01), # 區域面積佔整張圖比例(最小, 最大)
                   rng: np.random.Generator = None):
     
     H, W = img.shape[:2]
@@ -54,7 +54,7 @@ def random_region(img,
     
     elif shape == 'circle':
         # 圓形
-        r = int(max(1, np.sqrt(target_area * 0.1 / np.pi))) # 半徑
+        r = int(max(1, np.sqrt(target_area * 0.3 / np.pi))) # 半徑
         cx = int(rng.integers(r, W - r))
         cy = int(rng.integers(r, H - r))
         cv2.circle(mask, (cx, cy), r, 255, -1)
@@ -129,11 +129,12 @@ for filename in os.listdir(in_path):
 print(png_files)
 
 #out_path = 'dataset/SP3/train/defect/'
+''''''
 out_path = 'dataset/SP3/train/defect_for_classify/'
 csv_path = 'dataset/SP3/train/defect_for_classify/no_defects.csv'
 OVERWRITE = True
 os.makedirs(out_path, exist_ok = True)
-
+''''''
 mode = "w" if OVERWRITE or (not os.path.exists(csv_path)) else "a"
 fcsv = open(csv_path, mode, newline="", encoding="utf-8")
 writer = csv.writer(fcsv)
