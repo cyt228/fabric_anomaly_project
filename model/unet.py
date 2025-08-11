@@ -1,5 +1,5 @@
+# https://github.com/togheppi/pix2pix/model.py
 import torch
-
 
 class ConvBlock(torch.nn.Module):
     def __init__(self, input_size, output_size, kernel_size=4, stride=2, padding=1, activation=True, batch_norm=True):
