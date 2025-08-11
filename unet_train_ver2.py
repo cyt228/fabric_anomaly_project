@@ -1,28 +1,25 @@
-
+# unet_train_simple.py (Balanced 感知；epoch=100、無 early stop)
 import os, time, copy, torch, torch.nn as nn, torch.nn.functional as F
 from collections import defaultdict
 from torch.utils.data import DataLoader, random_split
 
 from dataset.recon_datasets import ReconPairedDataset
-from model.unet import Generator  
+from model.unet import Generator
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-# SSIM（輸入/標籤皆在 [0,1]）
+# ---------- SSIM ----------
 from math import exp
-
-def _gaussian(k, s): 
+def _gaussian(k, s):
     g = torch.tensor([exp(-(x-k//2)**2/(2*s**2)) for x in range(k)])
-    
     return g/g.sum()
 
 def _win(k, c, dev, dt):
     g1 = _gaussian(k, 1.5).to(device=dev, dtype=dt)
     g2 = (g1.unsqueeze(1) @ g1.unsqueeze(0)).unsqueeze(0).unsqueeze(0)
-    
     return g2.repeat(c,1,1,1)
 
-def ssim(x, y, k=7, eps=1e-8):
+def ssim(x, y, k=11, eps=1e-8):
     c = x.size(1); dev, dt = x.device, x.dtype; w = _win(k,c,dev,dt)
     mu_x = F.conv2d(x, w, padding=k//2, groups=c); mu_y = F.conv2d(y, w, padding=k//2, groups=c)
     mu_x2, mu_y2, mu_xy = mu_x**2, mu_y**2, mu_x*mu_y
@@ -31,30 +28,32 @@ def ssim(x, y, k=7, eps=1e-8):
     s_xy = F.conv2d(x*y, w, padding=k//2, groups=c) - mu_xy
     C1, C2 = 0.01**2, 0.03**2
     ssim_map = ((2*mu_xy + C1)*(2*s_xy + C2))/((mu_x2 + mu_y2 + C1)*(s_x2 + s_y2 + C2) + eps)
-    
     return ssim_map.mean()
 
-# 重構損失 & 指標累加
-def calc_loss(pred, target, metrics, k=5, w_l1=0.8, w_ssim=0.2):
-    l1  = F.l1_loss(pred, target)
-    s   = ssim(pred, target, k=k)
-    loss = w_l1*l1 + w_ssim*(1 - s)
+# ---------- Balanced Loss ----------
+def charbonnier_loss(x, y, eps=1e-3):
+    return torch.mean(torch.sqrt((x - y)**2 + eps**2))
 
-    metrics['loss'] += loss.item() * pred.size(0)
-    metrics['l1']   += l1.item()   * pred.size(0)
-    metrics['ssim'] += s.item()    * pred.size(0)
-    
+def calc_loss(pred, target, metrics, w_l=0.6, w_s=0.4):
+    charb = charbonnier_loss(pred, target)
+    s     = ssim(pred, target)
+    loss  = w_l*charb + w_s*(1 - s)
+
+    bs = pred.size(0)
+    metrics['loss']  += loss.item()  * bs
+    metrics['charb'] += charb.item() * bs
+    metrics['ssim']  += s.item()     * bs
     return loss
 
 def print_metrics(metrics, n, phase):
-    avg_loss = metrics['loss'] / n
-    avg_l1   = metrics['l1']   / n
-    avg_ssim = metrics['ssim'] / n
-    
-    print(f"{phase}: loss={avg_loss:.4f} | L1={avg_l1:.4f} | SSIM={avg_ssim:.4f}")
+    avg_loss  = metrics['loss']  / n
+    avg_charb = metrics['charb'] / n
+    avg_ssim  = metrics['ssim']  / n
+    print(f"{phase}: loss={avg_loss:.4f} | Charb={avg_charb:.4f} | SSIM={avg_ssim:.4f}")
 
-# dataloaders
-def make_dataloaders(normal_dir="dataset/SP3/train/defect-free", anom_dir="dataset/SP3/train/defect", batch_size=16, num_workers=4):
+# ---------- dataloaders ----------
+def make_dataloaders(normal_dir="dataset/SP3/train/defect-free", anom_dir="dataset/SP3/train/defect",
+                      batch_size=32, num_workers=4):
     ds = ReconPairedDataset(normal_dir, anom_dir)  # x_anom, x_norm, stem
     n_val = max(1, int(0.1*len(ds))); n_tr = len(ds) - n_val
     tr_ds, val_ds = random_split(ds, [n_tr, n_val], generator=torch.Generator().manual_seed(42))
@@ -64,11 +63,11 @@ def make_dataloaders(normal_dir="dataset/SP3/train/defect-free", anom_dir="datas
     }
     return dl
 
-# 訓練
+# ---------- train ----------
 def train_model(model, dataloaders, optimizer, scheduler, num_epochs=100):
+    scaler = torch.cuda.amp.GradScaler(enabled=(device.type=='cuda'))
     best_model_wts = copy.deepcopy(model.state_dict())
-    best_loss = float('inf')
-    best_ssim = float('-inf')
+    best_ssim = -1.0
 
     for epoch in range(num_epochs):
         print(f"Epoch {epoch}/{num_epochs-1}\n" + "-"*10)
@@ -76,10 +75,8 @@ def train_model(model, dataloaders, optimizer, scheduler, num_epochs=100):
 
         for phase in ['train', 'val']:
             if phase == 'train':
-                scheduler.step()
-                for pg in optimizer.param_groups:
-                    print("LR", pg['lr'])
                 model.train()
+                print("LR", optimizer.param_groups[0]['lr'])
             else:
                 model.eval()
 
@@ -87,63 +84,62 @@ def train_model(model, dataloaders, optimizer, scheduler, num_epochs=100):
             epoch_samples = 0
 
             for inputs, labels, _ in dataloaders[phase]:
-                inputs = inputs.to(device)   # x_anom
-                labels = labels.to(device)   # x_norm
-                optimizer.zero_grad()
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+                optimizer.zero_grad(set_to_none=True)
 
                 with torch.set_grad_enabled(phase == 'train'):
-                    outputs = model(inputs)          # U-Net重構，輸出應在 [0,1]
-                    loss = calc_loss(outputs, labels, metrics)
+                    with torch.cuda.amp.autocast(enabled=(device.type=='cuda')):
+                        outputs = model(inputs)
+                        loss = calc_loss(outputs, labels, metrics)
 
                     if phase == 'train':
-                        loss.backward()
-                        optimizer.step()
+                        scaler.scale(loss).backward()
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                        scaler.step(optimizer)
+                        scaler.update()
 
                 epoch_samples += inputs.size(0)
 
             print_metrics(metrics, epoch_samples, phase)
-            epoch_loss = metrics['loss'] / epoch_samples
+            if phase == 'train':
+                scheduler.step()  # CosineAnnealingWarmRestarts：每個 epoch 結束 step 一次
 
-            '''
-            if phase == 'val' and epoch_loss < best_loss - 1e-4:
-                print("saving best model")
-                best_loss = epoch_loss
-                best_model_wts = copy.deepcopy(model.state_dict())'''
-
-            if phase=='val':
-                epoch_ssim = metrics['ssim']/epoch_samples
+            if phase == 'val':
+                epoch_ssim = metrics['ssim'] / epoch_samples
                 if epoch_ssim > best_ssim + 1e-4:
-                    best_ssim = epoch_ssim; 
-                    print("saving best model")
+                    print("saving best model (by SSIM)")
+                    best_ssim = epoch_ssim
                     best_model_wts = copy.deepcopy(model.state_dict())
 
         time_elapsed = time.time() - since
         print('{:.0f}m {:.0f}s\n'.format(time_elapsed // 60, time_elapsed % 60))
 
-    print('Best val loss: {:4f}'.format(best_loss))
+    print('Best val SSIM: {:.4f}'.format(best_ssim))
     model.load_state_dict(best_model_wts)
     return model
-
 
 if __name__ == "__main__":
     print("device:", device)
 
-    # 1) Model（輸出層Sigmoid，值域 [0,1]）
+    # 1) Model（輸出層 Sigmoid，值域 [0,1]）
     model = Generator(input_dim=3, num_filter=64, output_dim=3).to(device)
 
-    # 2) Optim / Scheduler
-    optimizer_ft = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-4, betas=(0.9, 0.99), weight_decay=1e-5)
-    exp_lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer_ft, step_size=20, gamma=0.5)
+    # 2) Optim / Scheduler (Balanced)
+    optimizer_ft = torch.optim.AdamW(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=3e-4, weight_decay=1e-5
+    )
+    exp_lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer_ft, T_0=20, T_mult=2
+    )
 
     # 3) Data
-    dataloaders = make_dataloaders(batch_size=16)
+    dataloaders = make_dataloaders(batch_size=32)
 
-    # 4) Train
+    # 4) Train（100 epochs, no early stop）
     model = train_model(model, dataloaders, optimizer_ft, exp_lr_scheduler, num_epochs=100)
 
     # 5) Save best
     os.makedirs("checkpoints", exist_ok=True)
     torch.save({"model": model.state_dict()}, "checkpoints/recon_unet_best.pt")
-
-
-

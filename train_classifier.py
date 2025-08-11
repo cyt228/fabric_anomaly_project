@@ -113,7 +113,7 @@ def train_val_loop(orig_dir="dataset/SP3/train/defect_for_classify",
                    recon_dir="out/recon",
                    normals_csv="dataset/SP3/train/defect_for_classify/no_defects.csv",
                    out_ckpt="checkpoints_cls/cls_from_singledir_best.pt",
-                   size=512, epochs=40, batch_size=16, lr=1e-4, step_size=20, gamma=0.1):
+                   size=512, epochs=100, batch_size=16, lr=1e-4, step_size=20, gamma=0.1):
     os.makedirs(os.path.dirname(out_ckpt), exist_ok=True)
     dls = make_dataloaders(orig_dir, recon_dir, normals_csv, batch_size=batch_size, size=size)
 
@@ -176,5 +176,5 @@ if __name__ == "__main__":
         recon_dir="out/recon",
         normals_csv="dataset/SP3/train/defect_for_classify/no_defects.csv", # 「原本無瑕疵」清單
         out_ckpt="checkpoints_cls/cls_from_singledir_best.pt",
-        size=512, epochs=40, batch_size=16, lr=1e-4
+        size=512, epochs=100, batch_size=16, lr=1e-4
     )

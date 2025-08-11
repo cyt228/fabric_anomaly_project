@@ -13,9 +13,9 @@ def to_bgr_u8(t):
     return cv2.cvtColor(x, cv2.COLOR_RGB2BGR)
 
 @torch.no_grad()
-def main(normal_dir="dataset/SP3/train/defect-free", anom_dir="dataset/SP3/train/defect",
-         ckpt="checkpoints/recon_unet_best.pt", out_root="out/recon",
-         batch_size=8, num_workers=4):
+def main(normal_dir="dataset/SP3/test/all", anom_dir="dataset/SP3/test/all",
+         ckpt="checkpoints/recon_unet_best.pt", out_root="dataset/SP3/test/recon",
+         batch_size=16, num_workers=4):
     os.makedirs(out_root, exist_ok=True)
     ds = ReconPairedDataset(normal_dir, anom_dir)   # 回 (x_anom, x_norm, stem)
     dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
