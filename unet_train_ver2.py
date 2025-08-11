@@ -106,6 +106,7 @@ def train_model(num_epochs=100, batch_size=16, lr=2e-4, step_size=20, gamma=0.5,
                 best_ssim = avg_ssim
                 best_wts = copy.deepcopy(model.state_dict())
                 os.makedirs("checkpoints", exist_ok=True)
+                print("save best model")
                 torch.save({"model": best_wts}, "checkpoints/recon_unet_best.pt")
         sched.step(); print()
 
