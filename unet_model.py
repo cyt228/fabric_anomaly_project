@@ -3,14 +3,14 @@ import torch.nn as nn
 
 # Simple U-Net generator for image-to-image translation (3->3)
 # Outputs tanh in [-1, 1]
-def _conv_block(in_c, out_c, k=4, s=2, p=1, use_norm=True):
+def _conv_block(in_c, out_c, k=9, s=2, p=1, use_norm=True):
     layers = [nn.Conv2d(in_c, out_c, k, s, p, bias=not use_norm)]
     if use_norm:
         layers.append(nn.InstanceNorm2d(out_c))
     layers.append(nn.LeakyReLU(0.2, inplace=True))
     return nn.Sequential(*layers)
 
-def _deconv_block(in_c, out_c, k=4, s=2, p=1, use_norm=True, dropout=False):
+def _deconv_block(in_c, out_c, k=9, s=2, p=1, use_norm=True, dropout=False):
     layers = [nn.ConvTranspose2d(in_c, out_c, k, s, p, bias=not use_norm)]
     if use_norm:
         layers.append(nn.InstanceNorm2d(out_c))

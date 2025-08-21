@@ -151,12 +151,9 @@ def collate_fn(batch):
 
 def build_model(img_channels: int = 3):
     # Import your UNet from model.py
-    try:
-        from unet_model import UNetGenerator
-    except Exception as e:
-        raise RuntimeError("Cannot import UNetGenerator from model.py. Ensure the class name matches.") from e
-    netG = UNetGenerator(in_channels=img_channels, out_channels=img_channels)
-    return netG
+    from unet_model import UNetGenerator
+    return UNetGenerator()
+
 
 def load_checkpoint_into(model: nn.Module, ckpt_path: str, map_location=None):
     obj = torch.load(ckpt_path, map_location=map_location)
@@ -287,9 +284,9 @@ def build_argparser():
     p = argparse.ArgumentParser(description="Test (inference + evaluate) with best reconstruction model.")
     p.add_argument("--test_input_dir", type=str, required=True, help="Folder of test defect images (inputs).")
     p.add_argument("--test_target_dir", type=str, default=None, help="Optional folder of ground-truth clean images to evaluate.")
-    p.add_argument("--ckpt", type=str, default="checkpoints/recon_best.pt", help="Path to best checkpoint.")
+    p.add_argument("--ckpt", type=str, default="checkpoints_recon/recon_best.pt", help="Path to best checkpoint.")
     p.add_argument("--out_dir", type=str, default="recon", help="Output folder to save reconstructed images.")
-    p.add_argument("--img_size", type=int, default=256, help="Resize images to this size for inference.")
+    p.add_argument("--img_size", type=int, default=512, help="Resize images to this size for inference.")
     p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--num_workers", type=int, default=2)
     p.add_argument("--cpu", action="store_true", help="Force CPU even if CUDA is available.")

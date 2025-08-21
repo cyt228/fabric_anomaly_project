@@ -1,167 +1,115 @@
-import os
-import math
-import argparse
-from pathlib import Path
-
-import torch
-from torch.utils.data import DataLoader, random_split  # ← 加上 random_split
-from torchvision import transforms
+import os, math, argparse, torch
 import torch.nn.functional as F
+from torch.utils.data import DataLoader, random_split
+from torchvision import transforms
 
 from dataset import PairedImageFolder
 from unet_model import UNetGenerator
-
-def psnr(pred, target):
-    # inputs in [-1,1]; convert to [0,1] first
-    pred = (pred + 1) / 2
-    target = (target + 1) / 2
-    mse = F.mse_loss(pred, target, reduction='mean')
-    if mse.item() == 0:
-        return 99.0
-    return 10 * math.log10(1.0 / mse.item())
 
 def get_transform(img_size):
     return transforms.Compose([
         transforms.Resize((img_size, img_size), interpolation=transforms.InterpolationMode.BICUBIC),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5,0.5,0.5], std=[0.5,0.5,0.5])
+        transforms.Normalize([0.5]*3, [0.5]*3),   # [-1,1]
     ])
 
-def _can_use_dir(d):
-    return d is not None and isinstance(d, str) and len(d) > 0 and os.path.isdir(d)
+@torch.no_grad()
+def eval_psnr(model, loader, device):
+    if loader is None: return None
+    model.eval()
+    tot, cnt = 0.0, 0
+    for inp, tgt, _ in loader:
+        inp, tgt = inp.to(device), tgt.to(device)
+        out = model(inp)                 # [-1,1]
+        out = (out + 1)/2; tgt = (tgt + 1)/2
+        mse = F.mse_loss(out, tgt, reduction="none").view(out.size(0), -1).mean(dim=1).clamp_min(1e-8)
+        psnr = 10 * torch.log10(1.0 / mse)
+        tot += float(psnr.sum().item()); cnt += out.size(0)
+    model.train()
+    return tot / max(cnt, 1)
 
 def build_loaders(args):
     tfm = get_transform(args.img_size)
+    full = PairedImageFolder(args.train_input_dir, args.train_target_dir, transform=tfm)
 
-    # 建立整個訓練資料集
-    train_full = PairedImageFolder(args.train_input_dir, args.train_target_dir, transform=tfm)
-
-    # 優先使用使用者提供的獨立驗證資料夾
-    if _can_use_dir(args.val_input_dir) and _can_use_dir(args.val_target_dir):
-        val_set = PairedImageFolder(args.val_input_dir, args.val_target_dir, transform=tfm)
-        train_set = train_full
+    # 若提供 val 資料夾就用；否則從 train 切分
+    if args.val_input_dir and args.val_target_dir:
+        val = PairedImageFolder(args.val_input_dir, args.val_target_dir, transform=tfm)
+        train = full
     else:
-        # 沒有驗證資料夾 → 依 val_ratio 從訓練集切分
-        n_total = len(train_full)
-        if args.val_ratio > 0 and n_total > 1:
-            n_val = max(1, int(n_total * args.val_ratio))
-            # 確保至少保留 1 張訓練圖
-            if n_val >= n_total:
-                n_val = n_total - 1
-            n_train = n_total - n_val
+        if args.val_ratio > 0 and len(full) > 1:
+            n_val = max(1, int(len(full) * args.val_ratio))
+            n_val = min(n_val, len(full)-1)
             g = torch.Generator().manual_seed(args.split_seed)
-            train_set, val_set = random_split(train_full, [n_train, n_val], generator=g)
+            train, val = random_split(full, [len(full)-n_val, n_val], generator=g)
         else:
-            train_set, val_set = train_full, None  # 無法切分或 val_ratio=0
+            train, val = full, None
 
-    train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True,
+    train_loader = DataLoader(train, batch_size=args.batch_size, shuffle=True,
                               num_workers=args.workers, pin_memory=True)
-    val_loader = None
-    if val_set is not None:
-        val_loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=False,
-                                num_workers=args.workers, pin_memory=True)
+    val_loader = DataLoader(val, batch_size=args.batch_size, shuffle=False,
+                            num_workers=args.workers, pin_memory=True) if val is not None else None
     return train_loader, val_loader
-
-@torch.no_grad()
-def evaluate_psnr(model, loader, device):
-    """對整個資料集計算平均 PSNR；支援 None（回傳 None）。"""
-    if loader is None:
-        return None
-    model.eval()
-    total_psnr = 0.0
-    total_cnt = 0
-    for (inp, tgt, _) in loader:
-        inp = inp.to(device, non_blocking=True)
-        tgt = tgt.to(device, non_blocking=True)
-        out = model(inp)
-        # 這裡的 psnr() 以整個 batch 的 MSE 計算一個值；用 batch 大小加權平均
-        batch_psnr = psnr(out, tgt)
-        total_psnr += float(batch_psnr) * inp.size(0)
-        total_cnt += inp.size(0)
-    if total_cnt == 0:
-        return None
-    return total_psnr / total_cnt
-
-def save_ckpt(model, path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    torch.save(model.state_dict(), path)
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--train_input_dir', type=str, required=True, help='Directory of defective (input) training images')
-    p.add_argument('--train_target_dir', type=str, required=True, help='Directory of clean (target) training images')
-    p.add_argument('--val_input_dir', type=str, default=None, help='Directory of defective (input) validation images')
-    p.add_argument('--val_target_dir', type=str, default=None, help='Directory of clean (target) validation images')
-    p.add_argument('--val_ratio', type=float, default=0.1, help='If no val dirs, split this ratio from train as validation')
-    p.add_argument('--split_seed', type=int, default=42, help='Random seed for deterministic split')
+    p.add_argument('--train_input_dir', type=str, required=True)
+    p.add_argument('--train_target_dir', type=str, required=True)
+    p.add_argument('--val_input_dir', type=str, default=None)
+    p.add_argument('--val_target_dir', type=str, default=None)
+    p.add_argument('--val_ratio', type=float, default=0.1)      # 自動切分比例
+    p.add_argument('--split_seed', type=int, default=42)
     p.add_argument('--img_size', type=int, default=512)
-    p.add_argument('--batch_size', type=int, default=16)
+    p.add_argument('--batch_size', type=int, default=8)
     p.add_argument('--epochs', type=int, default=50)
     p.add_argument('--lr', type=float, default=2e-4)
     p.add_argument('--workers', type=int, default=2)
     p.add_argument('--save_dir', type=str, default='checkpoints')
-    p.add_argument('--resume', type=str, default='', help='Path to a checkpoint to resume (optional)')
+    p.add_argument('--resume', type=str, default='')
     args = p.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print('Device:', device)
-
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     train_loader, val_loader = build_loaders(args)
 
-    netG = UNetGenerator().to(device)
+    net = UNetGenerator().to(device)
     if args.resume and os.path.isfile(args.resume):
-        print(f'Resuming from {args.resume}')
-        netG.load_state_dict(torch.load(args.resume, map_location='cpu'))
+        net.load_state_dict(torch.load(args.resume, map_location='cpu'), strict=False)
 
-    optimizer = torch.optim.Adam(netG.parameters(), lr=args.lr, betas=(0.5, 0.999))
-    scaler = torch.cuda.amp.GradScaler(enabled=torch.cuda.is_available())
+    opt = torch.optim.Adam(net.parameters(), lr=args.lr, betas=(0.5, 0.999))
     l1 = torch.nn.L1Loss()
 
-    best_psnr = -1.0
+    os.makedirs(args.save_dir, exist_ok=True)
     last_path = os.path.join(args.save_dir, 'recon_last.pt')
     best_path = os.path.join(args.save_dir, 'recon_best.pt')
+    best_psnr = -1.0
 
     for epoch in range(1, args.epochs+1):
-        netG.train()
-        total_l1 = 0.0
-        for (inp, tgt, _) in train_loader:
-            inp = inp.to(device, non_blocking=True)
-            tgt = tgt.to(device, non_blocking=True)
+        net.train()
+        run_l1, n = 0.0, 0
+        for inp, tgt, _ in train_loader:
+            inp, tgt = inp.to(device), tgt.to(device)
+            opt.zero_grad(set_to_none=True)
+            out = net(inp)
+            loss = l1(out, tgt)
+            loss.backward()
+            opt.step()
+            run_l1 += loss.item() * inp.size(0); n += inp.size(0)
+        tr_l1 = run_l1 / max(n, 1)
 
-            optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
-                out = netG(inp)
-                loss = l1(out, tgt)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+        # 指標：優先 val PSNR，沒有 val 就用 train PSNR
+        val_psnr = eval_psnr(net, val_loader, device)
+        metric_psnr = val_psnr if val_psnr is not None else eval_psnr(net, train_loader, device)
 
-            total_l1 += loss.item() * inp.size(0)
-
-        avg_l1 = total_l1 / len(train_loader.dataset)
-
-        # 驗證（若無 val，就用訓練集 PSNR 當替代以挑選 best）
-        val_psnr = evaluate_psnr(netG, val_loader, device)
-        if val_psnr is None:
-            # 無法切出驗證集（例如資料太少或 val_ratio=0）
-            metric_psnr = evaluate_psnr(netG, train_loader, device)
-            metric_name = 'train PSNR'
-        else:
-            metric_psnr = val_psnr
-            metric_name = 'val PSNR'
-
-        # Save last every epoch
-        save_ckpt(netG, last_path)
-
-        # Save best by PSNR
+        # 存 last / best（raw state_dict，與極簡推論腳本相容）
+        torch.save(net.state_dict(), last_path)
         if metric_psnr is not None and metric_psnr > best_psnr:
             best_psnr = metric_psnr
-            save_ckpt(netG, best_path)
+            torch.save(net.state_dict(), best_path)
 
-        shown_val = val_psnr if val_psnr is not None else float('nan')
-        print(f'Epoch {epoch:03d}/{args.epochs} | train L1 {avg_l1:.4f} | {metric_name} {metric_psnr:.2f} dB | val PSNR {shown_val:.2f} dB | best {best_psnr:.2f} dB')
+        print(f"Epoch {epoch:03d}/{args.epochs} | L1 {tr_l1:.4f} | "
+              f"{'val' if val_psnr is not None else 'train'} PSNR {metric_psnr:.2f} dB | best {best_psnr:.2f} dB")
 
-    print(f'Done. Saved last to {last_path} and best to {best_path}')
+    print(f"Done. Saved last to {last_path} and best to {best_path}")
 
 if __name__ == '__main__':
     main()
