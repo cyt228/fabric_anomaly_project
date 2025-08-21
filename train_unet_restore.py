@@ -242,22 +242,26 @@ class MixLoss(nn.Module):
 # ----------------------
 
 class ModelEMA:
-    def __init__(self, model, decay=0.999):
-        self.ema = UNet()
+    def __init__(self, model, decay=0.999, device=None):
+        if device is None:
+            device = next(model.parameters()).device  # 自動偵測 model 的 device
+        self.ema = UNet().to(device)
         self.ema.load_state_dict(model.state_dict())
         self.ema.eval()
         for p in self.ema.parameters():
             p.requires_grad_(False)
         self.decay = decay
+        self.device = device
 
     @torch.no_grad()
     def update(self, model):
         msd = model.state_dict()
         for k, v in self.ema.state_dict().items():
             if v.dtype.is_floating_point:
-                v.copy_(v * self.decay + msd[k] * (1.0 - self.decay))
+                v.copy_(v * self.decay + msd[k].to(self.device) * (1.0 - self.decay))
             else:
                 v.copy_(msd[k])
+
 
 # ----------------------
 # Training
@@ -278,7 +282,7 @@ def train(args):
     scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
     criterion = MixLoss(alpha=args.alpha)
 
-    ema = ModelEMA(model, decay=0.999)
+    ema = ModelEMA(model, decay=0.999, device=device)
 
     ensure_dir(args.out_dir)
     ckpt_path = os.path.join(args.out_dir, 'checkpoint.pt')
