@@ -152,7 +152,7 @@ def collate_fn(batch):
 def build_model(img_channels: int = 3):
     # Import your UNet from model.py
     try:
-        from model import UNetGenerator
+        from unet_model import UNetGenerator
     except Exception as e:
         raise RuntimeError("Cannot import UNetGenerator from model.py. Ensure the class name matches.") from e
     netG = UNetGenerator(in_channels=img_channels, out_channels=img_channels)
